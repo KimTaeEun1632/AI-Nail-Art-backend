@@ -8,6 +8,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
+    nickname = Column(String, nullable=False)
     hashed_password = Column(String)
     images = relationship("Image", back_populates="user")
     refresh_tokens = relationship("RefreshToken", back_populates="user")

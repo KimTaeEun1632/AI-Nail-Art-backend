@@ -61,11 +61,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 # Pydantic 모델
 class UserCreate(BaseModel):
     email: EmailStr
+    nickname: str
     password: str = Field(..., min_length=8)
 
 class UserOut(BaseModel):
     id: int
     email: str
+    nickname: str
 
     class Config:
         from_attributes = True
@@ -79,10 +81,19 @@ class ImageOut(BaseModel):
     class Config:
         from_attributes = True
 
+class UserInToken(BaseModel):  # 로그인 응답의 user 객체용
+    id: int
+    email: str
+    nickname: str
+
+    class Config:
+        from_attributes = True
+
 class Token(BaseModel):
+    user: UserInToken
     access_token: str
     refresh_token: str
-    token_type: str
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -168,13 +179,13 @@ def generate_image(prompt: str, num_images: int = 4):
 @app.post("/signup", response_model=UserOut)
 def signup(user: UserCreate, db: Session = Depends(get_db)):
     try:
-        print(f"Received signup request: email={user.email}, password={user.password}")
+        print(f"Received signup request: email={user.email}, nickname={user.nickname}, password={user.password}")
         db_user = db.query(User).filter(User.email == user.email).first()
         if db_user:
             raise HTTPException(status_code=400, detail="Email already registered")
         hashed_password = get_password_hash(user.password)
         print(f"Hashed password: {hashed_password}")
-        new_user = User(email=user.email, hashed_password=hashed_password)
+        new_user = User(email=user.email, nickname=user.nickname, hashed_password=hashed_password)
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
@@ -185,8 +196,7 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
         print(f"Error in signup: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to sign up: {str(e)}")
 
-# 로그인
-@app.post("/login", response_model=Token)
+# 로그인@app.post("/login", response_model=Token)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
     try:
         print(f"Received login request: email={request.email}, password={request.password}")
@@ -217,9 +227,9 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         refresh_token = create_refresh_token(user.id, db)
         print(f"Refresh token created: {refresh_token}")
         return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer"
+            "user": user,
+            "refreshToken": refresh_token,
+            "accessToken": access_token,
         }
     except HTTPException as http_exc:
         raise http_exc
