@@ -60,7 +60,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Pydantic 모델
 class UserCreate(BaseModel):
-    email: str
+    email: EmailStr
     password: str = Field(..., min_length=8)
 
 class UserOut(BaseModel):
@@ -85,7 +85,7 @@ class Token(BaseModel):
     token_type: str
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 class RefreshRequest(BaseModel):

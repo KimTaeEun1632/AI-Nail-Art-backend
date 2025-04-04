@@ -9,7 +9,9 @@ click==8.1.8
 colorama==0.4.6
 cryptography==44.0.2
 diffusers==0.32.2
+dnspython==2.7.0
 ecdsa==0.19.1
+email_validator==2.2.0
 fastapi==0.115.11
 filelock==3.17.0
 fsspec==2025.2.0
