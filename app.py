@@ -19,6 +19,7 @@ import shutil
 from dotenv import load_dotenv
 import secrets
 from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 
 # .env 파일 로드
 load_dotenv()
@@ -27,6 +28,9 @@ load_dotenv()
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+
+# 정적 파일 제공 설정
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,10 +65,18 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 # Pydantic 모델
 class UserCreate(BaseModel):
     email: EmailStr
-    nickname: str
+    nickname: str  # nickname 필드 추가
     password: str = Field(..., min_length=8)
 
 class UserOut(BaseModel):
+    id: int
+    email: str
+    nickname: str  # nickname 필드 추가
+
+    class Config:
+        from_attributes = True
+
+class UserInToken(BaseModel):
     id: int
     email: str
     nickname: str
@@ -81,19 +93,10 @@ class ImageOut(BaseModel):
     class Config:
         from_attributes = True
 
-class UserInToken(BaseModel):  # 로그인 응답의 user 객체용
-    id: int
-    email: str
-    nickname: str
-
-    class Config:
-        from_attributes = True
-
 class Token(BaseModel):
     user: UserInToken
-    access_token: str
-    refresh_token: str
-
+    refreshToken: str
+    accessToken: str
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -156,21 +159,59 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 def home():
     return {"message": "AI Nail Art Generator is running!"}
 
-# 이미지 생성
+# 이미지 생성, 저장장
 @app.get("/generate")
-def generate_image(prompt: str, num_images: int = 4):
+def generate_image(
+    prompt: str,
+    num_images: int = 4,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     if not prompt or not prompt.strip():
         return JSONResponse(status_code=400, content={"error": "Prompt is required"})
     try:
         print(f"Generating images for prompt: {prompt}, num_images: {num_images}")
         generated_images = pipe(prompt, num_images_per_prompt=num_images).images
-        images_base64 = []
+        images_response = []
+
+        # uploads 디렉토리 설정
+        base_dir = Path(__file__).resolve().parent
+        upload_dir = base_dir / "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+
         for idx, image in enumerate(generated_images):
+            # 이미지 파일로 저장
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_name = f"{current_user.id}_{timestamp}_{idx}.png"
+            file_path = os.path.join(upload_dir, file_name)
+            
+            image.save(file_path, format="PNG")
+
+            # 데이터베이스에 저장
+            relative_file_path = f"uploads/{file_name}"
+            new_image = Image(
+                user_id=current_user.id,
+                file_path=relative_file_path,
+                prompt=prompt,
+                created_at=datetime.utcnow()
+            )
+            db.add(new_image)
+            db.commit()
+            db.refresh(new_image)
+
+            # base64로 변환하여 응답에 추가
             img_byte_arr = io.BytesIO()
             image.save(img_byte_arr, format="PNG")
             img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
-            images_base64.append({"id": idx + 1, "base64": img_base64})
-        return JSONResponse(content={"images": images_base64})
+            images_response.append({
+                "id": new_image.id,
+                "base64": img_base64,
+                "file_path": relative_file_path,
+                "prompt": prompt,
+                "created_at": new_image.created_at.isoformat()
+            })
+
+        return JSONResponse(content={"images": images_response})
     except Exception as e:
         print(f"Error generating images: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -196,7 +237,8 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
         print(f"Error in signup: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to sign up: {str(e)}")
 
-# 로그인@app.post("/login", response_model=Token)
+# 로그인
+@app.post("/login", response_model=Token)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
     try:
         print(f"Received login request: email={request.email}, password={request.password}")
@@ -268,9 +310,9 @@ def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
         new_refresh_token = create_refresh_token(user.id, db)
         
         return {
-            "access_token": access_token,
-            "refresh_token": new_refresh_token,
-            "token_type": "bearer"
+            "user": user,
+            "refreshToken": new_refresh_token,
+            "accessToken": access_token,
         }
     except HTTPException as http_exc:
         raise http_exc
@@ -290,37 +332,6 @@ def logout(current_user: User = Depends(get_current_user), db: Session = Depends
     except Exception as e:
         print(f"Error in logout: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to logout: {str(e)}")
-
-# 이미지 저장
-@app.post("/images/save")
-async def save_image(
-    prompt: str = Form(...),
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    try:
-        # backend 디렉토리를 기준으로 uploads 디렉토리 설정
-        base_dir = Path(__file__).resolve().parent
-        upload_dir = base_dir / "uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        file_path = os.path.join(upload_dir, f"{current_user.id}_{file.filename}")
-        
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        # 데이터베이스에는 상대 경로 저장 (uploads/1_image.png)
-        relative_file_path = f"uploads/{current_user.id}_{file.filename}"
-        new_image = Image(user_id=current_user.id, file_path=relative_file_path, prompt=prompt)
-        db.add(new_image)
-        db.commit()
-        db.refresh(new_image)
-        return {"message": "Image saved successfully", "file_path": relative_file_path}
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        print(f"Error in save_image: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to save image: {str(e)}")
 
 # 내 라이브러리 조회
 @app.get("/images/my-library", response_model=list[ImageOut])
