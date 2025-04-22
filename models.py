@@ -1,7 +1,7 @@
 # backend/models.py
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean
 from sqlalchemy.orm import relationship
-from database import Base  # database.py에서 Base 임포트
+from backend.database import Base  # database.py에서 Base 임포트
 from datetime import datetime
 
 class User(Base):
@@ -21,6 +21,7 @@ class Image(Base):
     prompt = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="images")
+    is_bookmarked = Column(Boolean, default=False) #북마크 필드 추가, 기본 false
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"

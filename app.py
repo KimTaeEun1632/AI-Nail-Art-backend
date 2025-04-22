@@ -89,6 +89,7 @@ class ImageOut(BaseModel):
     file_path: str
     prompt: str
     created_at: datetime
+    is_bookmarked: bool
 
     class Config:
         from_attributes = True
@@ -159,7 +160,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 def home():
     return {"message": "AI Nail Art Generator is running!"}
 
-# 이미지 생성, 저장장
+# 이미지 생성
 @app.get("/generate")
 def generate_image(
     prompt: str,
@@ -174,20 +175,21 @@ def generate_image(
         generated_images = pipe(prompt, num_images_per_prompt=num_images).images
         images_response = []
 
-        # uploads 디렉토리 설정
+        # Set up storage directory
         base_dir = Path(__file__).resolve().parent
         upload_dir = base_dir / "uploads"
         os.makedirs(upload_dir, exist_ok=True)
 
         for idx, image in enumerate(generated_images):
-            # 이미지 파일로 저장
+            # Create unique filename with timestamp
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             file_name = f"{current_user.id}_{timestamp}_{idx}.png"
             file_path = os.path.join(upload_dir, file_name)
-            
+
+            # Save image to server
             image.save(file_path, format="PNG")
 
-            # 데이터베이스에 저장
+            # Record in database
             relative_file_path = f"uploads/{file_name}"
             new_image = Image(
                 user_id=current_user.id,
@@ -199,7 +201,7 @@ def generate_image(
             db.commit()
             db.refresh(new_image)
 
-            # base64로 변환하여 응답에 추가
+            # Convert to base64 for response
             img_byte_arr = io.BytesIO()
             image.save(img_byte_arr, format="PNG")
             img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
@@ -215,6 +217,32 @@ def generate_image(
     except Exception as e:
         print(f"Error generating images: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+    
+    # 이미지 저장    
+@app.post("/images/save")
+async def save_image(prompt: str = Form(...),file: UploadFile = File(...),current_user: User = Depends(get_current_user),db: Session = Depends(get_db)):
+    try:
+        # backend 디렉토리를 기준으로 uploads 디렉토리 설정
+        base_dir = Path(__file__).resolve().parent
+        upload_dir = base_dir / "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = os.path.join(upload_dir, f"{current_user.id}_{file.filename}")
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # 데이터베이스에는 상대 경로 저장 (uploads/1_image.png)
+        relative_file_path = f"uploads/{current_user.id}_{file.filename}"
+        new_image = Image(user_id=current_user.id, file_path=relative_file_path, prompt=prompt)
+        db.add(new_image)
+        db.commit()
+        db.refresh(new_image)
+        return {"message": "Image saved successfully", "file_path": relative_file_path}
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        print(f"Error in save_image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to save image: {str(e)}")    
 
 # 회원가입
 @app.post("/signup", response_model=UserOut)
@@ -337,10 +365,31 @@ def logout(current_user: User = Depends(get_current_user), db: Session = Depends
 @app.get("/images/my-library", response_model=list[ImageOut])
 def get_my_library(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        images = db.query(Image).filter(Image.user_id == current_user.id).all()
+        images = db.query(Image).filter(Image.user_id == current_user.id).order_by(Image.created_at.desc()).all()
         return images
-    except HTTPException as http_exc:
-        raise http_exc
     except Exception as e:
-        print(f"Error in get_my_library: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch library: {str(e)}")
+
+# 북마크 
+@app.post("/images/bookmark/{image_id}")
+def toggle_bookmark(image_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        image = db.query(Image).filter(Image.id == image_id, Image.user_id == current_user.id).first()
+        if not image:
+            raise HTTPException(status_code=404, detail="이미지를 찾을 수 없습니다.")
+        
+        image.is_bookmarked = not image.is_bookmarked  # 북마크 상태 토글
+        db.commit()
+        db.refresh(image)
+        return {"message": "북마크 상태가 업데이트되었습니다.", "is_bookmarked": image.is_bookmarked}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"북마크 업데이트 실패: {str(e)}")
+    
+# 북마크된 이미지 조회
+@app.get("/images/bookmarked", response_model=list[ImageOut])
+def get_bookmarked_images(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        images = db.query(Image).filter(Image.user_id == current_user.id, Image.is_bookmarked == True).all()
+        return images
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"북마크된 이미지 조회 실패: {str(e)}")
