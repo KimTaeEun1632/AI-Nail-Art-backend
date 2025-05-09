@@ -160,6 +160,21 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 def home():
     return {"message": "AI Nail Art Generator is running!"}
 
+# Base64 이미지 제공
+@app.get("/images/base64/{file_path:path}")
+async def get_image_base64(file_path: str):
+    # uploads/ 접두사 제거
+    clean_file_path = file_path.replace("uploads/", "", 1) if file_path.startswith("uploads/") else file_path
+    file_location = os.path.join("Uploads", clean_file_path)
+    print(f"Requested file_path: {file_path}, Cleaned file_path: {clean_file_path}, File location: {file_location}")
+    if not os.path.exists(file_location):
+        print(f"File not found: {file_location}")
+        raise HTTPException(status_code=404, detail="Image not found")
+    with open(file_location, "rb") as image_file:
+        encoded = base64.b64encode(image_file.read()).decode("utf-8")
+        print(f"Returning base64 for: {file_location}")
+        return {"base64": f"data:image/png;base64,{encoded}"}
+
 # 이미지 생성
 @app.get("/generate")
 def generate_image(
